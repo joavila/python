@@ -14,7 +14,7 @@ logger_process_flags  = logger.getChild('process_flags_block')
 WHEN=re.compile(";; WHEN: (.+)")
 ELAPSED=re.compile(";; Query time: (\d+ \w+)")
 SERVER=re.compile(";; SERVER: (.+)$")
-HEADER=re.compile(";; ->>HEADER<<- .+ status: (.+), .+$")
+HEADER=re.compile(";; ->>HEADER<<- .+ status: (.+), id: (\d+)$")
 DIG=re.compile("^; <<>> DiG \S+ <<>> (\S+) .+")
 
 def write(source_path, data):
@@ -41,7 +41,7 @@ def process_flags_block(flags_block):
         logger_process_flags.warning('Flags block is missing')
     return ret
 
-def process_answer(answer_block):
+def process_answer(answer_block, initial_timestamp, final_timestamp):
     ret = {}
     nq = 0
     logger_process_answer.debug('Answer block is: %s' % (answer_block))
@@ -59,11 +59,16 @@ def process_answer(answer_block):
             header = HEADER.search(answer_entry)
             if header:
                 ret['status'] = status = header.group(1)
+                identifier = header.group(2)
                 if status == 'NOERROR':
-                    pass
+                    logger_process_answer.debug("\tOK status detected between '%s' and '%s' for id: %s" % (initial_timestamp, final_timestamp, identifier))
                 else:
                     ret['description'] = 'N/A'
-                    logger_process_answer.warning('Unexpected status: %s' % (answer_entry))
+                    if status == 'REFUSED' or status == 'NXDOMAIN':
+                        fqdn = answer_block[0].split()[5]
+                        logger_process_answer.warn("\tNOK status '%s' detected between '%s' and '%s' while searching for:\n\t\t%s" % (status, initial_timestamp, final_timestamp, fqdn))
+                    else:
+                        logger_process_answer.warning('Unexpected status: %s' % (answer_entry))
             else:
                 logger_process_answer.warning('No status in: %s' % (answer_entry))
         elif re.match(r";; flags:", answer_entry):
@@ -104,15 +109,15 @@ class ConnectionTimeoutError(Exception):
 def read_dig_entry(block):
     ret = {}
     determinant_entry = block[4]
+    initial_timestamp = block[0]
+    final_timestamp = block[-1]
     if re.match(r";; connection timed out; no servers could be reached", determinant_entry):
-        initial_timestamp = block[0]
         command = block[2]
-        final_timestamp = block[-1]
         logger_read_dig_entry.warn("\tConnection timeout detected between '%s' and '%s' while executing:\n\t\t%s" % (initial_timestamp, final_timestamp, command))
         raise ConnectionTimeoutError(determinant_entry)
     if re.match(r";; Got answer:", determinant_entry):
         logger_read_dig_entry.debug('Got answer: %s' % (block))
-        return process_answer(block[2:-2])
+        return process_answer(block[2:-2], initial_timestamp, final_timestamp)
     raise Exception(determinant_entry)
 
 def main():
